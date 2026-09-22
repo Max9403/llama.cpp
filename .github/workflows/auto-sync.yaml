@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  format-code:
+  repo-sync:
     runs-on: ubuntu-latest
 
     permissions:
