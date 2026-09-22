@@ -33,7 +33,11 @@ jobs:
       - name: Fetch upstream and fork branches
         run: |
           git remote add upstream https://github.com/ggml-org/llama.cpp.git 2>/dev/null || true
-          git fetch upstream master
+
+          git fetch upstream \
+            +refs/heads/master:refs/remotes/upstream/master \
+            +refs/tags/*:refs/tags/*
+
           git fetch origin \
             +refs/heads/master:refs/remotes/origin/master \
             +refs/heads/customized:refs/remotes/origin/customized
@@ -42,6 +46,8 @@ jobs:
         run: |
           git push origin upstream/master:master \
             --force-with-lease=master:$(git rev-parse origin/master)
+
+          git push origin 'refs/tags/*:refs/tags/*'
 
       - name: Rebase custom branch
         run: |
