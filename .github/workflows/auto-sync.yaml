@@ -1,0 +1,51 @@
+name: Auto sync
+
+on:
+  schedule:
+    - cron: "17 03 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  format-code:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: customized
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream and fork branches
+        run: |
+          git remote add upstream https://github.com/ggml-org/llama.cpp.git 2>/dev/null || true
+          git fetch upstream master
+          git fetch origin \
+            +refs/heads/master:refs/remotes/origin/master \
+            +refs/heads/customized:refs/remotes/origin/customized
+
+      - name: Mirror upstream master
+        run: |
+          git push origin upstream/master:master \
+            --force-with-lease=master:$(git rev-parse origin/master)
+
+      - name: Rebase custom branch
+        run: |
+          git switch customized
+          git rebase upstream/master
+          git push origin customized:customized \
+            --force-with-lease=customized:$(git rev-parse origin/customized)
