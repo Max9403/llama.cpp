@@ -35,8 +35,7 @@ jobs:
           git remote add upstream https://github.com/ggml-org/llama.cpp.git 2>/dev/null || true
 
           git fetch upstream \
-            +refs/heads/master:refs/remotes/upstream/master \
-            +refs/tags/*:refs/tags/*
+            +refs/heads/master:refs/remotes/upstream/master
 
           git fetch origin \
             +refs/heads/master:refs/remotes/origin/master \
@@ -46,8 +45,82 @@ jobs:
         run: |
           git push origin upstream/master:master \
             --force-with-lease=master:$(git rev-parse origin/master)
+            - name: Mirror upstream release tags
+              shell: bash
+              run: |
+                set -euo pipefail
 
-          git push origin 'refs/tags/*:refs/tags/*'
+                is_release_tag() {
+                  local tag="$1"
+
+                  # llama.cpp's historical numeric build tags.
+                  if [[ "$tag" =~ ^b[0-9]+$ ]]; then
+                    return 0
+                  fi
+
+                  # Semantic-version tags:
+                  # v1.2.3
+                  # v1.2.3-rc.1
+                  # v1.2.3+build.4
+                  # v1.2.3-rc.1+build.4
+                  if [[ "$tag" =~ ^v[0-9]+(\.[0-9]+){2}(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+                    return 0
+                  fi
+
+                  return 1
+                }
+
+                # Fetch only candidates that could plausibly be release tags.
+                # Filtering to actual SemVer happens below before pushing.
+                git fetch upstream \
+                  '+refs/tags/b*:refs/tags/b*' \
+                  '+refs/tags/v*:refs/tags/v*'
+
+                # Read matching release tags already present in the fork.
+                declare -A origin_tags
+
+                while read -r oid ref; do
+                  tag="${ref#refs/tags/}"
+
+                  if is_release_tag "$tag"; then
+                    origin_tags["$tag"]="$oid"
+                  fi
+                done < <(
+                  git ls-remote --tags --refs origin \
+                    'refs/tags/b*' \
+                    'refs/tags/v*'
+                )
+
+                # Select only upstream-style bNNNNN and actual SemVer tags.
+                refs_to_push=()
+
+                while read -r oid ref; do
+                  tag="${ref#refs/tags/}"
+
+                  if ! is_release_tag "$tag"; then
+                    continue
+                  fi
+
+                  if [[ "${origin_tags[$tag]:-}" != "$oid" ]]; then
+                    refs_to_push+=("${ref}:${ref}")
+                  fi
+                done < <(
+                  git for-each-ref \
+                    --format='%(objectname) %(refname)' \
+                    refs/tags
+                )
+
+                echo "Release tags requiring sync: ${#refs_to_push[@]}"
+
+                # Avoid one huge GitHub ref-update request.
+                batch_size=100
+
+                for (( i=0; i<${#refs_to_push[@]}; i+=batch_size )); do
+                  batch=( "${refs_to_push[@]:i:batch_size}" )
+
+                  echo "Pushing release-tag batch $((i / batch_size + 1))"
+                  git push origin "${batch[@]}"
+                done
 
       - name: Rebase custom branch
         run: |
