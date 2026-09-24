@@ -122,10 +122,39 @@ jobs:
             echo "Pushing release-tag batch $((i / batch_size + 1))"
             git push origin "${batch[@]}"
           done
-
-      - name: Rebase custom branch
+      - name: Rebase customized onto latest upstream b tag
+        shell: bash
         run: |
+          set -euo pipefail
+
           git switch customized
-          git rebase upstream/master
+
+          # Your earlier step has already fetched upstream's b tags.
+          # Choose the highest numeric b tag that is on upstream/master.
+          latest_tag=
+          while IFS= read -r tag; do
+            [[ "$tag" =~ ^b[0-9]+$ ]] || continue
+            if git merge-base --is-ancestor "${tag}^{commit}" upstream/master; then
+              latest_tag=$tag
+              break
+            fi
+          done < <(git tag --list 'b[0-9]*' --sort=-version:refname)
+
+          [[ -n "$latest_tag" ]] || {
+            echo "No upstream b tag found on upstream/master" >&2
+            exit 1
+          }
+
+          target=$(git rev-parse "${latest_tag}^{commit}")
+          old_base=$(git merge-base customized upstream/master)
+
+          # Do not accidentally move customized backwards.
+          git merge-base --is-ancestor "$old_base" "$target" || {
+            echo "Latest b tag ($latest_tag) is older than customized's current upstream base." >&2
+            exit 1
+          }
+
+          echo "Rebasing custom commits from $old_base onto $latest_tag ($target)"
+          git rebase --onto "$target" "$old_base" customized
           git push origin customized:customized \
-            --force-with-lease=customized:$(git rev-parse origin/customized)
+            --force-with-lease="customized:$(git rev-parse origin/customized)"
