@@ -1,0 +1,61 @@
+name: Cut release tag
+
+on:
+  push:
+    tags:
+      - 'r'
+
+permissions:
+  contents: write
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute and push cN.bNNN tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          commit=$(git rev-parse refs/tags/r^{commit})
+
+          base_tag=
+          while IFS= read -r tag; do
+            [[ "$tag" =~ ^b[0-9]+$ ]] || continue
+            base_tag=$tag
+            break
+          done < <(git tag --merged "$commit" --list 'b[0-9]*' --sort=-version:refname)
+
+          if [[ -z "$base_tag" ]]; then
+            echo "No bN tag reachable from r ($commit)" >&2
+            exit 1
+          fi
+
+          last_num=0
+          while IFS= read -r tag; do
+            [[ "$tag" =~ ^c([0-9]+)\.b[0-9]+$ ]] || continue
+            last_num=${BASH_REMATCH[1]}
+            break
+          done < <(git tag --list 'c[0-9]*.b[0-9]*' --sort=-version:refname)
+
+          next_num=$(( last_num + 1 ))
+          new_tag="c${next_num}.${base_tag}"
+
+          if git rev-parse "$new_tag" >/dev/null 2>&1; then
+            echo "$new_tag already exists, skipping"
+          else
+            git tag "$new_tag" "$commit"
+            git push origin "$new_tag"
+            echo "Cut release $new_tag from r ($commit)"
+          fi
+
+          # Free up "r" so it can be reused for the next release.
+          git push origin :refs/tags/r
+          git tag -d r
