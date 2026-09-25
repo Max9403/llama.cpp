@@ -129,8 +129,7 @@ jobs:
 
           git switch customized
 
-          # Your earlier step has already fetched upstream's b tags.
-          # Choose the highest numeric b tag that is on upstream/master.
+          # Find the highest numeric upstream b tag on upstream/master.
           latest_tag=
           while IFS= read -r tag; do
             [[ "$tag" =~ ^b[0-9]+$ ]] || continue
@@ -146,15 +145,79 @@ jobs:
           }
 
           target=$(git rev-parse "${latest_tag}^{commit}")
+          old_head=$(git rev-parse customized)
           old_base=$(git merge-base customized upstream/master)
+          expected_remote=$(git rev-parse origin/customized)
 
-          # Do not accidentally move customized backwards.
           git merge-base --is-ancestor "$old_base" "$target" || {
-            echo "Latest b tag ($latest_tag) is older than customized's current upstream base." >&2
+            echo "$latest_tag is older than customized's current upstream base" >&2
             exit 1
           }
 
-          echo "Rebasing custom commits from $old_base onto $latest_tag ($target)"
+          # Find the latest release tag in customized's PRE-rebase history.
+          # Accept the original cX tag and subsequent cX.bY tags.
+          old_c_tag=
+          while IFS= read -r tag; do
+            [[ "$tag" =~ ^c([1-9][0-9]*)(\.b[0-9]+)?$ ]] || continue
+            old_c_tag=$tag
+            c_num=${BASH_REMATCH[1]}
+            break
+          done < <(git tag --merged "$old_head" \
+            --list 'c[0-9]*' --sort=-version:refname)
+
+          [[ -n "$old_c_tag" ]] || {
+            echo "No cX or cX.bY tag is reachable from customized" >&2
+            exit 1
+          }
+
+          old_release=$(git rev-parse "${old_c_tag}^{commit}")
+
+          # Count how far the release commit is behind the old tip.
+          offset=$(git rev-list --count --first-parent "$old_release..$old_head")
+          old_count=$(git rev-list --count --first-parent "$old_base..$old_head")
+
+          [[ "$old_release" != "$old_base" ]] &&
+          git merge-base --is-ancestor "$old_base" "$old_release" &&
+          [[ "$(git rev-parse "$old_head~$offset")" == "$old_release" ]] || {
+            echo "$old_c_tag does not mark a custom commit on the rebase path" >&2
+            exit 1
+          }
+
+          # This position-based mapping assumes a linear custom-commit history.
+          [[ "$(git rev-list --count --merges "$old_base..$old_head")" == 0 ]] || {
+            echo "customized contains merge commits; cannot safely map the tag" >&2
+            exit 1
+          }
+
+          echo "Rebasing customized from $old_base onto $latest_tag ($target)"
           git rebase --onto "$target" "$old_base" customized
-          git push origin customized:customized \
-            --force-with-lease="customized:$(git rev-parse origin/customized)"
+
+          # If rebase dropped a commit, the old offset no longer identifies
+          # the corresponding release commit. Fail rather than mis-tag it.
+          new_count=$(git rev-list --count --first-parent "$target..customized")
+          [[ "$new_count" == "$old_count" ]] || {
+            echo "Rebase changed the commit count; refusing to guess tag position" >&2
+            exit 1
+          }
+
+          new_release=$(git rev-parse "customized~$offset")
+          new_tag="c${c_num}.${latest_tag}"
+
+          if git show-ref --verify --quiet "refs/tags/$new_tag"; then
+            [[ "$(git rev-parse "${new_tag}^{commit}")" == "$new_release" ]] || {
+              echo "$new_tag already exists on a different commit" >&2
+              exit 1
+            }
+          else
+            git tag "$new_tag" "$new_release"
+          fi
+
+          # Push branch and tag together, or neither. Only the branch may be
+          # force-updated, and only if it is still at the commit we fetched.
+          git push --atomic origin \
+            --force-with-lease="refs/heads/customized:$expected_remote" \
+            "+refs/heads/customized:refs/heads/customized" \
+            "refs/tags/$new_tag:refs/tags/$new_tag"
+
+          echo "Tagged the rebased equivalent of $old_c_tag as $new_tag:"
+          git log -1 --format='%h %s' "$new_tag"
