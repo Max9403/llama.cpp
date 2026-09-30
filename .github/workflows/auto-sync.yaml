@@ -2,7 +2,7 @@ name: Auto sync
 
 on:
   schedule:
-    - cron: "17 03 * * 1"
+    - cron: "17 03 * * *"
   workflow_dispatch:
 
 permissions:
